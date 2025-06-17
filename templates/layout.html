@@ -21,8 +21,14 @@
 
 <meta name="theme-color" content="#222222">
 
-
-
+<div class="navbar">
+  <!-- 他のナビ要素 -->
+  <div class="logout-link">
+    {% if session.get('user_id') %}
+      <a href="{{ url_for('logout') }}">ログアウト</a>
+    {% endif %}
+  </div>
+</div>
 </head>
 
 
@@ -42,30 +48,29 @@
 
 
 <a href="/form" class="nav-item {% if current == 'form' %}active{% endif %}">
-  <span class="icon">📝</span>
+  <img src="{{ url_for('static', filename='icons/edit.svg') }}" class="nav-icon" alt="入力">
   <span class="label">入力</span>
 </a>
 
 <a href="/history" class="nav-item {% if current == 'history' %}active{% endif %}">
-  <span class="icon">📊</span>
+  <img src="{{ url_for('static', filename='icons/history.svg') }}" class="nav-icon" alt="履歴">
   <span class="label">履歴</span>
 </a>
 
 <a href="/summary" class="nav-item {% if current == 'summary' %}active{% endif %}">
-  <span class="icon">📈</span>
+  <img src="{{ url_for('static', filename='icons/list.svg') }}" class="nav-icon" alt="集計">
   <span class="label">集計</span>
 </a>
 
-<a href="/settings" class="nav-item {% if current == 'settings' %}active{% endif %}">
-  <span class="icon">⚙️</span>
-  <span class="label">設定</span>
-</a>
-
 <a href="/matrix" class="nav-item {% if current == 'matrix' %}active{% endif %}">
-  <span class="icon">🧠</span>
+  <img src="{{ url_for('static', filename='icons/analytics.svg') }}" class="nav-icon" alt="マトリクス">
   <span class="label">マトリクス</span>
 </a>
 
+<a href="/settings" class="nav-item {% if current == 'settings' %}active{% endif %}">
+  <img src="{{ url_for('static', filename='icons/settings.svg') }}" class="nav-icon" alt="設定">
+  <span class="label">設定</span>
+</a>
 
 
 

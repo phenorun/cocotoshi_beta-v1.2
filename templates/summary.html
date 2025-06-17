@@ -92,26 +92,45 @@
     <div class="summary-card">
       <div class="summary-card-row1">
         <span class="summary-stock-name">{{ row[1] }}</span>
-        {% if row[3]|int >= 0 %}
-          <span class="summary-type-buy">買</span>
-        {% else %}
-          <span class="summary-type-sell">売</span>
-        {% endif %}
-        <span class="summary-purpose">
-          {% set purpose_icons = {
-            '短期': '💹 短期',
-            '長期': '📈 長期',
-            '中期': '📊 中期',
-            '優待': '🎁 優待',
-            '配当': '💰 配当',
-            'benefit': '💹 利益',
-            'dividend': '💰 配当',
-            'long': '📈 長期',
-            'middle': '📊 中期',
-            'short': '💹 短期'
-          } %}
-          {{ purpose_icons.get(row[2], row[2] or '-') }}
-        </span>
+          {% if row[9] == 'sell' %}
+            <span class="summary-type-sell">売</span>
+          {% else %}
+            <span class="summary-type-buy">買</span>
+          {% endif %}
+          <span class="summary-purpose">
+            {% set svg_map = {
+              '短期': 'short.svg',
+              '中期': 'middle.svg',
+              '長期': 'long.svg',
+              '優待': 'benefits.svg',
+              '配当': 'dividend.svg',
+              'short': 'short.svg',
+              'middle': 'middle.svg',
+              'long': 'long.svg',
+              'benefit': 'benefits.svg',
+              'dividend': 'dividend.svg'
+            } %}
+            {% set label_map = {
+              '短期': '短期',
+              '中期': '中期',
+              '長期': '長期',
+              '優待': '優待',
+              '配当': '配当',
+              'short': '短期',
+              'middle': '中期',
+              'long': '長期',
+              'benefit': '優待',
+              'dividend': '配当'
+            } %}
+            {% set svg_file = svg_map.get(row[2], '') %}
+            {% set label = label_map.get(row[2], row[2] or '-') %}
+            {% if svg_file %}
+              <img src="{{ url_for('static', filename='icons/' ~ svg_file) }}" class="purpose-icon" width="22" height="22"> {{ label }}
+            {% else %}
+              {{ label }}
+            {% endif %}
+          </span>
+
           <span class="summary-feeling-label"
                 style="
                   display:inline-block;
@@ -137,14 +156,24 @@
         <button class="summary-btn" onclick="location.href='/history?q={{ row[0] }}'">履歴</button>
       </div>
       <div class="summary-card-row2">
-        <span>保有日数: 
-          {% if row[7] != '-' %}{{ row[7] }} 日
-          {% else %}－
-          {% endif %}
-        </span>
+      <span>保有日数: 
+        {% if row[7] is not none and row[7] != '-' and row[7] != '' %}
+          {{ row[7] }} 日
+        {% else %}
+          －
+        {% endif %}
+      </span>
         <span>株数: {{ "{:,}".format(row[3]|int) }}</span>
         <!-- 必要に応じて追加で平均取得単価や日付もここに -->
       </div>
+
+        <div class="summary-memo-toggle" onclick="toggleSummaryMemo(this)">
+          ▼メモ
+        </div>
+        <div class="summary-memo" style="display:none;">
+          <span><b>メモ</b>: {{ row[8] if row[8] and row[8]|trim != "" and row[8]|lower != "none" else "（メモなし）" }}</span>
+        </div>
+
     </div>
   {% endfor %}
 </div>
@@ -166,6 +195,22 @@
   document.getElementById('clear-btn').onclick = function() {
     window.location.href = '/summary';
   };
+
+function toggleSummaryMemo(el) {
+  const memoDiv = el.nextElementSibling;
+  if (memoDiv.style.display === "none" || !memoDiv.style.display) {
+    memoDiv.style.display = "block";
+    el.textContent = "メモ▲";
+  } else {
+    memoDiv.style.display = "none";
+    el.textContent = "▼メモ";
+  }
+}
 </script>
+
+
+
+
+
 
 {% endblock %}

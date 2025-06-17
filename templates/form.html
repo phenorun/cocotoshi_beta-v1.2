@@ -22,88 +22,181 @@
 
 <body>
   <h2>📝 投資記録の入力</h2>
-  <form method="POST">
+  
+<form method="POST">
 
+  <label>種別：
+    <select name="type" required>
+      <option value="buy"   {% if type == "buy" %}selected{% endif %}>買い</option>
+      <option value="sell"  {% if type == "sell" %}selected{% endif %}>売り</option>
+      <option value="watch" {% if type == "watch" %}selected{% endif %}>ウォッチ</option>
+    </select>
+  </label>
 
-    <label>種別：
-      <select name="type">
-        <option value="buy">買い</option>
-        <option value="sell">売り</option>
-        <option value="watch">ウォッチ</option>
-      </select>
-    </label>
+  <label>銘柄コード（4桁 or ティッカー）：
+    <input type="text" id="code" name="code" maxlength="10"
+      value="{{ code or '' }}" oninput="fetchCompanyName()" required />
+  </label>
 
-    <label>銘柄コード（4桁 or ティッカー）：
-      <input type="text" id="code" name="code" maxlength="10" oninput="fetchCompanyName()" required /></label>
-    </div>
+  <label>銘柄名（自動反映・日本株のみ）：
+    <input type="text" id="company" name="stock" value="{{ stock or '' }}" readonly required />
+  </label>
 
-    <label>銘柄名(コードを入力すると自動反映されます。ただし日本株のみ)：
-      <input type="text" id="company" name="stock" readonly required /></label>
-    <div>
+  <label>株価（円）：
+    <input type="text" name="price" value="{{ price or '' }}" required>
+  </label>
 
+  <label>数量：
+    <input type="text" name="quantity" value="{{ request.form.quantity or quantity or 100 }}" required>
 
+  </label>
 
+  <label>取引額（円）：
+    <input type="text" name="total" id="total" value="{{ total or '' }}" readonly style="background:#eee; color:#888;">
+  </label>
 
+  <label>日付：
+    <input type="date" name="date" id="date" value="{{ date or today }}">
+  </label>
 
-    <label>株価（円）：<input type="text" name="price" required></label>
+  <label>感情：</label>
+  <div class="feeling-options">
+    {% for feeling in entry_feelings %}
+      <label>
+        <input type="radio" name="feeling" value="{{ loop.index0 }}"
+          {% if (feeling is defined and (feeling|string) == (loop.index0|string)) or (feeling is not defined and loop.index0 == 2) %}checked{% endif %}
+          required>
+        <span class="feeling-label feeling-{{ loop.index0 }}">{{ feeling }}</span>
+      </label>
+    {% endfor %}
+  </div>
 
-    <label>数量：<input type="text" name="quantity" value="100" required></label>
-
-    <label>取引額（円）
-    <input type="text"  name="total" id="total" value="{{ trade.total if trade else '' }}" readonly style="background:#eee; color:#888;">
-    </label>
-
-    <label>日付：
-    <input type="date" name="date" id="date">
-    </label>
-
-<label>感情：</label>
-<div class="feeling-options">
-  {% for feeling in entry_feelings %}
+  <label>投資目的：</label>
+  <div class="purpose-options">
     <label>
-      <input type="radio" name="feeling" value="{{ loop.index0 }}" {% if loop.index0 == 2 %}checked{% endif %} required>
-      <span class="feeling-label feeling-{{ loop.index0 }}">{{ feeling }}</span>
+      <input type="radio" class="purpose-radio" name="purpose" value="0"
+        {% if purpose is defined and (purpose|string) == "0" %}checked{% endif %}>
+      <span class="purpose-icon">
+        <img src="{{ url_for('static', filename='icons/short.svg') }}" alt="短期" width="28" height="28">
+      </span>
+      <span class="purpose-label">短期</span>
     </label>
-  {% endfor %}
-</div>
+    <label>
+      <input type="radio" class="purpose-radio" name="purpose" value="1"
+        {% if purpose is defined and (purpose|string) == "1" %}checked{% endif %}>
+      <span class="purpose-icon">
+        <img src="{{ url_for('static', filename='icons/middle.svg') }}" alt="中期" width="28" height="28">
+      </span>
+      <span class="purpose-label">中期</span>
+    </label>
+    <label>
+      <input type="radio" class="purpose-radio" name="purpose" value="2"
+        {% if purpose is defined and (purpose|string) == "2" %}checked{% endif %}>
+      <span class="purpose-icon">
+        <img src="{{ url_for('static', filename='icons/long.svg') }}" alt="長期" width="28" height="28">
+      </span>
+      <span class="purpose-label">長期</span>
+    </label>
+    <label>
+      <input type="radio" class="purpose-radio" name="purpose" value="3"
+        {% if purpose is defined and (purpose|string) == "3" %}checked{% endif %}>
+      <span class="purpose-icon">
+        <img src="{{ url_for('static', filename='icons/benefits.svg') }}" alt="優待" width="28" height="28">
+      </span>
+      <span class="purpose-label">優待</span>
+    </label>
+    <label>
+      <input type="radio" class="purpose-radio" name="purpose" value="4"
+        {% if purpose is defined and (purpose|string) == "4" %}checked{% endif %}>
+      <span class="purpose-icon">
+        <img src="{{ url_for('static', filename='icons/dividend.svg') }}" alt="配当" width="28" height="28">
+      </span>
+      <span class="purpose-label">配当</span>
+    </label>
+  </div>
 
-
-   
-
-<label>投資目的：</label>
-<div class="purpose-options">
-  <label>
-    <input type="radio" class="purpose-radio" name="purpose" value="1">
-    <span class="purpose-icon">💹</span>
-    <span class="purpose-label">短期</span>
+  <label>メモ：
+    <textarea name="memo" rows="3">{{ memo or '' }}</textarea>
   </label>
-  <label>
-    <input type="radio" class="purpose-radio" name="purpose" value="2">
-    <span class="purpose-icon">📊</span>
-    <span class="purpose-label">中期</span>
-  </label>
-  <label>
-    <input type="radio" class="purpose-radio" name="purpose" value="3">
-    <span class="purpose-icon">📈</span>
-    <span class="purpose-label">長期</span>
-  </label>
-  <label>
-    <input type="radio" class="purpose-radio" name="purpose" value="4">
-    <span class="purpose-icon">🎁</span>
-    <span class="purpose-label">優待</span>
-  </label>
-  <label>
-    <input type="radio" class="purpose-radio" name="purpose" value="5">
-    <span class="purpose-icon">💰</span>
-    <span class="purpose-label">配当</span>
-  </label>
-</div>
+
+  <button class="btn" type="submit">保存する</button>
+</form>
+
+
+<!-- ここから重複確認モーダル -->
+{% if duplicate_type == "same-purpose" %}
+  <div class="modal-overlay">
+    <div class="modal-box">
+      <div style="margin-bottom:16px;">
+        <b>すでに同目的の同銘柄を所有中です。合算しますか？</b>
+      </div>
+      <form method="POST">
+        <!-- 登録情報をhiddenで全て再送信 -->
+        <input type="hidden" name="type" value="{{ type or '' }}">
+        <input type="hidden" name="code" value="{{ code or '' }}">
+        <input type="hidden" name="stock" value="{{ stock or '' }}">
+        <input type="hidden" name="price" value="{{ price or '' }}">
+        <input type="hidden" name="quantity" value="{{ quantity or '' }}">
+        <input type="hidden" name="total" value="{{ total or '' }}">
+        <input type="hidden" name="date" value="{{ date or today }}">
+        <input type="hidden" name="feeling" value="{{ feeling or '' }}">
+        <input type="hidden" name="purpose" value="{{ purpose or '' }}">
+        <input type="hidden" name="memo" value="{{ memo or '' }}">
+        <input type="hidden" name="confirm" value="合算">
+        <button class="btn" type="submit">合算する</button>
+        <a href="{{ url_for('form') }}" class="btn btn-cancel">キャンセル</a>
+      </form>
+    </div>
+  </div>
+{% elif duplicate_type == "diff-purpose" %}
+  <div class="modal-overlay">
+    <div class="modal-box">
+      <div style="margin-bottom:16px;">
+        <b>同銘柄を所有中ですが、目的が異なるため新たに親カードを作成します。よろしいですか？</b>
+      </div>
+      <form method="POST">
+        <input type="hidden" name="type" value="{{ type or '' }}">
+        <input type="hidden" name="code" value="{{ code or '' }}">
+        <input type="hidden" name="stock" value="{{ stock or '' }}">
+        <input type="hidden" name="price" value="{{ price or '' }}">
+        <input type="hidden" name="quantity" value="{{ quantity or '' }}">
+        <input type="hidden" name="total" value="{{ total or '' }}">
+        <input type="hidden" name="date" value="{{ date or today }}">
+        <input type="hidden" name="feeling" value="{{ feeling or '' }}">
+        <input type="hidden" name="purpose" value="{{ purpose or '' }}">
+        <input type="hidden" name="memo" value="{{ memo or '' }}">
+        <input type="hidden" name="confirm" value="新規">
+        <button class="btn" type="submit">新規で登録</button>
+        <a href="{{ url_for('form') }}" class="btn btn-cancel">キャンセル</a>
+      </form>
+    </div>
+  </div>
+{% endif %}
 
 
 
-    <label>メモ：<textarea name="memo" rows="3"></textarea></label>
-    <button class="btn" type="submit">保存する</button>
+
   </form>
+
+
+<style>
+.modal-overlay {
+  position: fixed; left:0; top:0; width:100vw; height:100vh;
+  background: rgba(0,0,0,0.18); z-index:10000;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  background: #fff; padding: 32px 24px 24px 24px;
+  border-radius: 16px; box-shadow: 0 6px 24px #0002;
+  min-width: 270px; max-width: 92vw;
+  text-align: center;
+}
+.btn-cancel {
+  background: #bbb; color: #fff; margin-left: 20px;
+  border-radius: 12px; padding: 8px 18px;
+  text-decoration: none;
+}
+</style>
 
   <div style="height:90px;"></div>
 
@@ -195,6 +288,9 @@ function fetchCompanyName() {
 
 </body>
 </html>
+
+
+
 
 
 {% endblock %}

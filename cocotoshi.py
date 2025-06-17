@@ -1,13 +1,38 @@
-from flask import Flask, render_template, request, redirect, url_for,jsonify
-import sqlite3
+from flask import Flask, render_template, request, redirect, url_for,jsonify,flash
+import psycopg2
 from datetime import datetime
 import csv
+from flask import request
+
+import psycopg2
+
+from werkzeug.security import generate_password_hash, check_password_hash
+
+import os
+from dotenv import load_dotenv
+
+from flask import session
+from werkzeug.security import check_password_hash
+
+from flask import session, redirect, url_for, flash
 
 
+load_dotenv()
+
+def get_db_conn():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        database=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        port=os.getenv("DB_PORT"),
+        sslmode="require"
+    )
 
 
 app = Flask(__name__)
-DATABASE = 'cocotoshi.db'
+app.secret_key = os.getenv("SECRET_KEY", "cocotoshi-super-secret-key")
+
 
 
 entry_feelings = ["恐怖", "不安", "普通", "強気", "焦り"]
@@ -75,54 +100,62 @@ def company_name():
 
 # データベース初期化
 def init_db():
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        c.execute('''
-           CREATE TABLE IF NOT EXISTS trades (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-           type TEXT,
-           stock TEXT,
-           price REAL,
-           quantity INTEGER,
-            total REAL,
-            date TEXT,
-          feeling INTEGER,
-          memo TEXT,
-           parent_id INTEGER,
-           code TEXT,  -- ← これを追加！
-        remaining_quantity INTEGER
-               )
-        ''')
-        conn.commit()
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            c.execute('''
+                CREATE TABLE IF NOT EXISTS trades (
+                    id SERIAL PRIMARY KEY,
+                    type TEXT,
+                    stock TEXT,
+                    price REAL,
+                    quantity INTEGER,
+                    total REAL,
+                    date TEXT,
+                    feeling INTEGER,
+                    memo TEXT,
+                    parent_id INTEGER,
+                    code TEXT,
+                    remaining_quantity INTEGER,
+                    purpose INTEGER,
+                    user_id INTEGER       -- ここを追加！
+                )
+            ''')
+            conn.commit()
 
 # データ取得
 def get_trades():
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM trades ORDER BY date DESC")
-        return c.fetchall()
+    user_id = session.get('user_id')
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM trades WHERE user_id = %s ORDER BY date DESC", (user_id,))
+            result = c.fetchall()
+    return result
+
 
 
 from math import ceil
 
+
 @app.route("/")
 def index():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
     # ✅ URLのどちらかに watch_to_delete が含まれているかチェック！
     watch_to_delete = request.args.get("watch_to_delete")
     new_code = request.args.get("new_code")
 
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
         # 🧠 URLに ?watch_to_delete が含まれていればそのまま使う（優先）
-        if not watch_to_delete and new_code:
-            c.execute("SELECT id FROM trades WHERE type = 'watch' AND code = ?", (new_code,))
-            row = c.fetchone()
-            if row:
-                watch_to_delete = row[0]
+            if not watch_to_delete and new_code:
+                c.execute("SELECT id FROM trades WHERE type = 'watch' AND code = %s", (new_code,))
+                row = c.fetchone()
+                if row:
+                    watch_to_delete = row[0]
 
-        c.execute("SELECT * FROM trades ORDER BY date DESC, id DESC")
-        trades = c.fetchall()
+            c.execute("SELECT * FROM trades WHERE user_id = %s ORDER BY date DESC, id DESC", (session['user_id'],))
+            trades = c.fetchall()
 
     trade_tree = build_trade_tree(trades)
 
@@ -143,16 +176,31 @@ from math import ceil
 
 @app.route("/matrix")
 def matrix():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
     from math import ceil
-    from datetime import datetime
-    import numpy as np
-    # cocotoshi.py の matrix() 関数内の "matrix_results" 算出後、return直前に追記
-    from collections import defaultdict
-    # 1. トレードデータ取得
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        c.execute("SELECT * FROM trades ORDER BY date, id")
-        trades = c.fetchall()
+    from datetime import datetime, date
+
+    # 1. 日付パラメータ取得（なければ全期間）
+    start = request.args.get('start')
+    end = request.args.get('end')
+
+    # 日付条件ありでクエリ
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            user_id = session.get('user_id')
+            if start and end:
+                c.execute(
+                    "SELECT * FROM trades WHERE user_id = %s AND date BETWEEN %s AND %s ORDER BY date, id",
+                    (user_id, start, end)
+                )
+            else:
+                c.execute(
+                    "SELECT * FROM trades WHERE user_id = %s ORDER BY date, id",
+                    (user_id,)
+                )
+            trades = c.fetchall()
 
     # 2. build_trade_treeで履歴情報構築
     trade_tree = build_trade_tree(trades)
@@ -177,13 +225,11 @@ def matrix():
                         days_held = (d1 - d0).days
                     except Exception:
                         days_held = "-"
-                    # ここでexit_dateもtupleに入れる（index 7）
                     parent_purpose = parent.get("purpose", 0)
                     try:
                         parent_purpose = int(parent_purpose)
                     except Exception:
                         parent_purpose = 0
-
                     matrix_results.append((
                         profit,
                         clamp_feeling(parent["feeling"]),
@@ -197,34 +243,21 @@ def matrix():
                         parent_purpose
                     ))
 
-    # 4. 並び順の切り替え
+    # 並び順
     sort = request.args.get('sort', 'date_desc')
     if sort == "date_asc":
-        matrix_results.sort(key=lambda x: x[7])  # 日付昇順
+        matrix_results.sort(key=lambda x: x[7])
     elif sort == "profit_desc":
         matrix_results.sort(key=lambda x: x[0] or 0, reverse=True)
     elif sort == "profit_asc":
         matrix_results.sort(key=lambda x: x[0] or 0)
     else:
-        matrix_results.sort(key=lambda x: x[7], reverse=True)  # デフォ：日付降順（新しい順）
-    
-
-        # ★ この辞書をmatrix関数内のどこかで宣言！
-    purposes = {
-        1: "短期",
-        2: "中期",
-        3: "長期",
-        4: "優待",
-        5: "配当",
-        # 必要に応じて追加
-    }
-
-
+        matrix_results.sort(key=lambda x: x[7], reverse=True)
 
     # 投資目的ラベル
     purpose_labels = ["短期", "中期", "長期", "優待", "配当"]
 
-
+    # ヒートマップ集計
     heatmap_trades = []
     for item in trade_tree:
         parent = item["parent"]
@@ -238,14 +271,40 @@ def matrix():
                     heatmap_trades.append(
                         (parent["feeling"], child["feeling"], profit)
                     )
+    heatmap, heatmap_counts = calc_heatmap(heatmap_trades)
 
-    # ヒートマップデータ作成
-    heatmap = calc_heatmap(heatmap_trades)
+    # ====== 追加ここから ======
+    def calc_heatmap_sum(trades):
+        import numpy as np
+        N = 5
+        profit_mat = np.zeros((N, N))
+        count_mat = np.zeros((N, N))
+        for entry, exit_, profit in trades:
+            if entry is not None and exit_ is not None:
+                i = int(entry)
+                j = int(exit_)
+                profit_mat[i][j] += profit
+                count_mat[i][j] += 1
+        return profit_mat.astype(int).tolist(), count_mat.astype(int).tolist()
+
+    heatmap_avg, heatmap_counts = calc_heatmap(heatmap_trades)
+    heatmap_sum, _ = calc_heatmap_sum(heatmap_trades)
+    mode = request.args.get('mode', 'avg')
 
 
-    # 集計用辞書
+
+    # 集計期間：トレードデータの日付で自動判定
+    dates = [row[6] for row in trades if row[6] and row[6] != "None"]
+    if dates:
+        start_date = min(dates)
+        end_date = max(dates)
+    else:
+        today_str = date.today().strftime('%Y-%m-%d')
+        start_date = start or today_str
+        end_date = end or today_str
+
+    # グラフ用
     purpose_stats = {label: {"days": [], "win": 0, "total": 0} for label in purpose_labels}
-
     for row in matrix_results:
         profit = row[0]
         days_held = row[3]
@@ -253,18 +312,13 @@ def matrix():
         try:
             purpose_label = purpose_labels[int(purpose_idx)]
         except (ValueError, IndexError, TypeError):
-            continue  # 不正なデータはスキップ
-
-        # 日数（int型のみ集計）
+            continue
         if isinstance(days_held, int):
             purpose_stats[purpose_label]["days"].append(days_held)
-        # 勝率カウント
         if profit is not None:
             purpose_stats[purpose_label]["total"] += 1
             if profit > 0:
                 purpose_stats[purpose_label]["win"] += 1
-
-    # グラフ用リスト（棒グラフ＋折れ線グラフ用）
     purpose_graph_data = []
     for label in purpose_labels:
         stats = purpose_stats[label]
@@ -276,131 +330,139 @@ def matrix():
             "win_rate": win_rate
         })
 
-
-
-
-
-
-
     # ページネーション
     page = int(request.args.get('page', 1))
     per_page = 10
     total = len(matrix_results)
     total_pages = ceil(total / per_page)
-    start = (page - 1) * per_page
-    end = start + per_page
-    results_page = matrix_results[start:end]
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    results_page = matrix_results[start_idx:end_idx]
 
     return render_template(
         "matrix.html",
+        start_date=start_date,
+        end_date=end_date,
         results=results_page,
         page=page,
         total_pages=total_pages,
         current="matrix",
         sort=sort,
         purposes=purposes,
-        heatmap=heatmap,  # ← 追加！
-        entry_feelings=entry_feelings,  # ← 追加
-        exit_feelings=exit_feelings,    # ← 追加
-        purpose_graph_data=purpose_graph_data,  # ←ここを追加！
+        entry_feelings=entry_feelings,
+        exit_feelings=exit_feelings,
+        purpose_graph_data=purpose_graph_data,
+        heatmap_avg=heatmap_avg,
+        heatmap_sum=heatmap_sum,
+        heatmap_counts=heatmap_counts,
+        mode=mode,
     )
 
 
 
 
 
-from math import ceil
 
 @app.route("/summary")
 def summary():
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT
-                code,
-                stock,
-                purpose,
-                SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END)
-                    - SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END) AS holding,
-                ROUND(
-                CASE
-                    WHEN SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END)
-                        - SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END) > 0 THEN
-                    SUM(CASE WHEN type='buy' THEN price * quantity ELSE 0 END)
-                    / NULLIF(SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END), 0)
-                    WHEN SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END)
-                        - SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END) < 0 THEN
-                    SUM(CASE WHEN type='sell' THEN price * quantity ELSE 0 END)
-                    / NULLIF(SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END), 0)
-                    ELSE 0
-                END
-                ) AS avg_price,
-                CASE
-                WHEN SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END)
-                    - SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END) > 0 THEN
-                    MAX(CASE WHEN type='buy' THEN date END)
-                WHEN SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END)
-                    - SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END) < 0 THEN
-                    MAX(CASE WHEN type='sell' THEN date END)
-                ELSE NULL
-                END AS last_trade_date,
-                -- 👇ここがポイント！（カンマに注意）
-                MAX(CASE WHEN type='buy' THEN feeling END) AS feeling
-            FROM trades
-            WHERE code IS NOT NULL
-            GROUP BY code, stock, purpose
-            HAVING holding != 0
-            ORDER BY last_trade_date DESC
-        """)
-        summary_data = c.fetchall()
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+    from datetime import datetime
+
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            user_id = session.get('user_id')
+            # 親カード一覧を取得
+            c.execute("""
+                SELECT id, code, stock, purpose, quantity, price, date, feeling, memo, type
+                FROM trades
+                WHERE parent_id IS NULL
+                AND code IS NOT NULL
+                AND user_id = %s
+            """, (user_id,))
+            parents = c.fetchall()
+
+            # 子カード一覧を取得
+            c.execute("""
+                SELECT id, parent_id, type, quantity, date, memo
+                FROM trades
+                WHERE parent_id IS NOT NULL
+                AND user_id = %s
+            """, (user_id,))
+            all_children = c.fetchall()
 
 
-    # ★ここから保有日数を計算して付与する★
+    summary_data = []
     today = datetime.today().date()
-    summary_data_with_days = []
-    for row in summary_data:
-        # row: [code, stock, purpose, holding, avg_price, last_trade_date]
-        print("row=", row)
+    purpose_map = {
+        "0": "短期", "1": "中期", "2": "長期", "3": "優待", "4": "配当",
+        0: "短期", 1: "中期", 2: "長期", 3: "優待", 4: "配当"
+    }
 
-        last_date = row[5]
-        feeling = row[6]  # ここで感情値を取得
-        if last_date:
+    for parent in parents:
+        parent_id = parent[0]
+        code = parent[1]
+        stock = parent[2]
+        purpose_raw = parent[3]
+        parent_quantity = parent[4]
+        date = parent[6]
+        feeling = parent[7]
+        parent_memo = parent[8]
+        parent_type = parent[9]
+
+        # この親に属する子カードだけを抽出
+        children = [row for row in all_children if row[1] == parent_id]
+
+        # 親＋子カード合算の数量
+        total_quantity = parent_quantity
+        for c_row in children:
+            if c_row[2] == "buy":
+                total_quantity += c_row[3]
+            elif c_row[2] == "sell":
+                total_quantity -= c_row[3]
+
+        # 最新売買日付・メモ（親と子で最大日付を探す）
+        dates_and_memos = [(date, parent_memo)]
+        for c_row in children:
+            dates_and_memos.append((c_row[4], c_row[5]))
+        latest_date, latest_memo = max(dates_and_memos, key=lambda x: x[0] or "")
+        memo = latest_memo if latest_memo not in [None, "", "None"] else parent_memo
+
+        # 保有日数
+        hold_days = "-"
+        if latest_date and latest_date != "None":
             try:
-                last_date_dt = datetime.strptime(last_date, "%Y-%m-%d").date()
-                hold_days = (today - last_date_dt).days
+                base_date_dt = datetime.strptime(latest_date, "%Y-%m-%d").date()
+                delta = (today - base_date_dt).days
+                hold_days = delta if delta >= 0 else 0
             except Exception:
                 hold_days = "-"
-        else:
-            hold_days = "-"
-        print("hold_days=", hold_days)
-        # rowにhold_daysを追加して新リスト化
-        summary_data_with_days.append(list(row) + [hold_days])
 
-        purpose_map = {
-            "0": "短期", "1": "中期", "2": "長期", "3": "優待", "4": "配当",
-            0: "短期", 1: "中期", 2: "長期", 3: "優待", 4: "配当"
-        }
+        # 目的名変換
+        purpose = purpose_map.get(str(purpose_raw), purpose_raw)
 
-        summary_data_with_days = []
-        for row in summary_data:
-            # ...保有日数処理...
-            raw_purpose = row[2]
-            purpose = purpose_map.get(str(raw_purpose), raw_purpose)
-            # row[2] = 目的名に置き換え
-            new_row = list(row)
-            new_row[2] = purpose
-            summary_data_with_days.append(new_row)
+        summary_data.append([
+            code,         # 0
+            stock,        # 1
+            purpose,      # 2
+            total_quantity, # 3
+            "-",          # 4: avg_price
+            latest_date,  # 5
+            feeling,      # 6
+            hold_days,    # 7
+            memo,         # 8
+            parent_type,  # 9
+        ])
 
+    # 最新売買日で降順
+    summary_data.sort(key=lambda x: x[5] or "", reverse=True)
 
-
-
-
-
-    # ページネーション
+    # ページ送り
     page = int(request.args.get('page', 1))
     per_page = 12
     total = len(summary_data)
-    total_pages = ceil(total / per_page)
+    total_pages = (total + per_page - 1) // per_page
     start = (page - 1) * per_page
     end = start + per_page
     summary_data_page = summary_data[start:end]
@@ -410,7 +472,7 @@ def summary():
         page=page,
         total_pages=total_pages,
         current="summary",
-        summary_data=summary_data_with_days,  # ←ココ！
+        summary_data=summary_data_page,
         entry_feelings=entry_feelings,
     )
 
@@ -418,12 +480,11 @@ def summary():
 
 
 
-
-
-
-
 @app.route("/settings")
 def settings():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
     return render_template("settings.html",current="settings")
 
 
@@ -432,235 +493,295 @@ def settings():
 
 @app.route('/form', methods=['GET', 'POST'])
 def form():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+
     edit_id = request.form.get('edit_id') or request.args.get('edit_id')
     trade = None
     is_parent_edit = True  # デフォルトは親
 
-    if edit_id and request.method == 'GET':
-    # 編集時：既存データ取得
-        with sqlite3.connect(DATABASE) as conn:
-            c = conn.cursor()
-            c.execute("SELECT * FROM trades WHERE id=?", (edit_id,))
-            trade = c.fetchone()
-    # 親カード＝parent_idがNoneまたは空
-        is_parent_edit = trade[9] is None or trade[9] == ""  # 9列目=parent_id
-    else:
-        is_parent_edit = True  # 新規作成時は親カード扱い
-
-
-
-    if request.method == 'POST':
-        # POSTされた値を取得
-        type = request.form['type']
-        stock = request.form.get("stock", "").strip()
-        if not stock:
-            error_msg = "銘柄名が空です。銘柄コードを入力して自動補完してください。"
-            return render_template('form.html', error_msg=error_msg)
-        price = int(float(request.form['price']))
-        quantity = int(request.form['quantity'])
-        total = price * quantity
-        date = request.form['date']
-        feeling_raw = request.form.get("feeling", "")
-        feeling = clamp_feeling(feeling_raw)  # これで絶対0～4になる
-
-        memo = request.form['memo']
-        parent_id = request.form.get("parent_id")
+    if request.method == "POST":
+        # 入力値取得
+        stock = request.form.get("stock")
         code = request.form.get("code")
+        purpose_raw = request.form.get("purpose")
+        type = request.form.get("type")
+        price_raw = request.form.get("price")
+        quantity_raw = request.form.get("quantity")
+        date = request.form.get("date")
+        feeling_raw = request.form.get("feeling", "")
+        memo = request.form.get("memo")
+        parent_id = request.form.get("parent_id")
         parent_id = int(parent_id) if parent_id else None
-        purpose_raw = request.form.get("purpose", "").strip()
+        confirm = request.form.get("confirm")  # "合算" or "新規" or None
+
+        # バリデーション：数値項目
+        try:
+            price = int(float(price_raw))
+        except Exception:
+            return render_template('form.html', error_msg="株価が不正です", **locals())
+        try:
+            quantity = int(quantity_raw)
+        except Exception:
+            return render_template('form.html', error_msg="数量が不正です", **locals())
+        if not stock:
+            return render_template('form.html', error_msg="銘柄名が入力されていません", **locals())
+        if not code:
+            return render_template('form.html', error_msg="銘柄コードが入力されていません", **locals())
+        total = price * quantity
+
+        # 感情・目的（デフォルト値）
+        try:
+            feeling = int(feeling_raw)
+        except Exception:
+            feeling = 2  # 普通
         try:
             purpose = int(purpose_raw)
-        except (ValueError, TypeError):
-            purpose = 0  # 未設定や不正な値は 0 にしておく
+        except Exception:
+            purpose = 0  # 未設定
 
 
-                # 子カードの場合、親カードの値を自動補完
-        if parent_id:
-            with sqlite3.connect(DATABASE) as conn:
-                c = conn.cursor()
-                c.execute("SELECT code, purpose, stock FROM trades WHERE id=?", (parent_id,))
-                parent_row = c.fetchone()
-                if parent_row:
-                    if not code or code.strip() == "":
-                        code = parent_row[0]
-                    if not purpose:
-                        purpose = parent_row[1]
-                    if not stock or stock.strip() == "":
-                        stock = parent_row[2]
 
 
-        # ＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
-        # ★「新規売り」と「編集時の売り」それぞれ残株数バリデーション
+
+        # ===============================
+        # 編集時：そのままUPDATE
+        # ===============================
+        if edit_id:
+            with get_db_conn() as conn:
+                with conn.cursor() as c:
+                    user_id = session.get('user_id')
+                    c.execute("""
+                        UPDATE trades
+                        SET type=%s, stock=%s, price=%s, quantity=%s, total=%s, date=%s, feeling=%s, memo=%s, parent_id=%s, code=%s, purpose=%s
+                        WHERE id=%s AND user_id=%s
+                    """, (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose, edit_id, user_id))
+                    conn.commit()
+            return redirect("/history")
+
+        # ===============================
+        # 売り注文バリデーション
+        # ===============================
         if type == 'sell' and parent_id:
-            # 残株数を計算
-            with sqlite3.connect(DATABASE) as conn:
-                c = conn.cursor()
-                c.execute("SELECT type FROM trades WHERE id=?", (parent_id,))
-                parent_row = c.fetchone()
-                parent_type = parent_row[0] if parent_row else "buy"
+            with get_db_conn() as conn:
+                with conn.cursor() as c:
+                    user_id = session.get('user_id')
+                    # 親カードのタイプ取得（同じuserだけ対象！）
+                    c.execute("SELECT type FROM trades WHERE id=%s AND user_id=%s", (parent_id, user_id))
+                    parent_row = c.fetchone()
+                    parent_type = parent_row[0] if parent_row else "buy"
+                    if parent_type == "buy":
+                        c.execute("""
+                            SELECT COALESCE(SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END), 0) -
+                                COALESCE(SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END), 0)
+                            FROM trades
+                            WHERE (parent_id=%s OR id=%s) AND user_id=%s
+                        """, (parent_id, parent_id, user_id))
+                        remaining = c.fetchone()[0]
+                    elif parent_type == "sell":
+                        c.execute("""
+                            SELECT COALESCE(SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END), 0) -
+                                COALESCE(SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END), 0)
+                            FROM trades
+                            WHERE (parent_id=%s OR id=%s) AND user_id=%s
+                        """, (parent_id, parent_id, user_id))
+                        remaining = c.fetchone()[0]
+                    else:
+                        remaining = 0
+            if quantity > remaining:
+                error_msg = f"親カードの残株数（{remaining}株）以上の売りはできません！"
+                trade_tree = build_trade_tree(get_trades())
+                return render_template(
+                    "history.html",
+                    trade_tree=trade_tree,
+                    error_msg=error_msg,
+                    current="history"
+                )
 
-                if parent_type == "buy":
-                    c.execute("""
-                        SELECT 
-                            COALESCE(SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END), 0) -
-                            COALESCE(SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END), 0)
-                        FROM trades
-                        WHERE parent_id=? OR id=?
-                    """, (parent_id, parent_id))
-                    remaining = c.fetchone()[0]
-                elif parent_type == "sell":
-                    c.execute("""
-                        SELECT 
-                            COALESCE(SUM(CASE WHEN type='sell' THEN quantity ELSE 0 END), 0) -
-                            COALESCE(SUM(CASE WHEN type='buy' THEN quantity ELSE 0 END), 0)
-                        FROM trades
-                        WHERE parent_id=? OR id=?
-                    """, (parent_id, parent_id))
-                    remaining = c.fetchone()[0]
-                else:
-                    remaining = 0
 
-            # --- 編集時は自分自身の旧数量を加算して増分だけ判定 ---
-            if edit_id:
-                with sqlite3.connect(DATABASE) as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT quantity FROM trades WHERE id=?", (edit_id,))
-                    old_qty_row = c.fetchone()
-                    old_qty = old_qty_row[0] if old_qty_row else 0
-
-                # 編集後の数量増分だけで判定（減らすだけならバリデーション不要）
-                increase = quantity - old_qty
-                if increase > 0 and increase > remaining:
-                    error_msg = f"親カードの残株数（{remaining}株）以上の売り増加はできません！"
-                    trade_tree = build_trade_tree(get_trades())
-                    return render_template(
-                        "history.html",
-                        trade_tree=trade_tree,
-                        error_msg=error_msg,
-                        edit_id=edit_id,
-                        edit_type=type,
-                        edit_stock=stock,
-                        edit_code=code,
-                        edit_price=int(price) if price is not None else "",
-                        edit_quantity=quantity,
-                        edit_total=int(total) if total is not None else "",
-                        edit_date=date,
-                        edit_feeling=feeling_raw,
-                        edit_purpose=purpose,
-                        edit_memo=memo,
+        # ===============================
+        # 新規登録時のみ重複判定と合算/新規モーダル
+        # ===============================
+        # 追加売買（parent_idあり）や編集時はスルー
+        if not edit_id and not parent_id:
+            with get_db_conn() as conn:
+                with conn.cursor() as c:
+                    user_id = session.get('user_id')
+                    c.execute(
+                        "SELECT * FROM trades WHERE code=%s AND stock=%s AND parent_id IS NULL AND user_id=%s",
+                        (code, stock, user_id)
                     )
-            else:
-                # 新規登録時はそのまま
-                if quantity > remaining:
-                    error_msg = f"親カードの残株数（{remaining}株）以上の売りはできません！"
-                    trade_tree = build_trade_tree(get_trades())
-                    return render_template(
-                        "history.html",
-                        trade_tree=trade_tree,
-                        error_msg=error_msg,
-                        edit_id=edit_id,
-                        edit_type=type,
-                        edit_stock=stock,
-                        edit_code=code,
-                        edit_price=int(price) if price is not None else "",
-                        edit_quantity=quantity,
-                        edit_total=int(total) if total is not None else "",
-                        edit_date=date,
-                        edit_feeling=feeling_raw,
-                        edit_purpose=purpose,
-                        edit_memo=memo,
-                    )
-        # ＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝
+                    existing_parents = c.fetchall()
+                same_purpose = [row for row in existing_parents if str(row["purpose"]) == str(purpose)]
+                diff_purpose = [row for row in existing_parents if str(row["purpose"]) != str(purpose)]
+
+                duplicate_type = None
+                if same_purpose:
+                    duplicate_type = "same-purpose"
+                elif diff_purpose:
+                    duplicate_type = "diff-purpose"
+
+            # ---- 合算確定時はUPDATE
+            if duplicate_type == "same-purpose" and confirm == "合算":
+                parent_trade = same_purpose[0]
+                parent_id_ = parent_trade["id"]
+                old_qty = parent_trade["quantity"]
+                old_total = parent_trade["total"]
+                new_qty = old_qty + quantity
+                new_total = old_total + total
+                new_price = new_total / new_qty if new_qty else 0
+                with get_db_conn() as conn:
+                    with conn.cursor() as c:
+                        c.execute(
+                            "UPDATE trades SET quantity=%s, total=%s, price=%s, date=%s WHERE id=%s AND user_id=%s",
+                            (new_qty, new_total, new_price, date, parent_id_, user_id)
+                        )
+                        conn.commit()
+                flash("合算で登録しました。")
+                return redirect(url_for("history"))
 
 
+            # ---- モーダル分岐
+            if (duplicate_type == "same-purpose" and confirm != "合算") or (duplicate_type == "diff-purpose" and confirm != "新規"):
+                return render_template(
+                    "form.html",
+                    duplicate_type=duplicate_type,
+                    stock=stock,
+                    code=code,
+                    price=price,
+                    quantity=quantity,
+                    total=total,
+                    date=date,
+                    feeling=feeling,
+                    purpose=purpose,
+                    memo=memo,
+                    type=type,
+                    parent_id=parent_id,
+                    today=datetime.today().strftime('%Y-%m-%d'),
+                    current="form"
+                )
+            # 「新規」選択ならこのままINSERTへ
 
-
-        with sqlite3.connect(DATABASE) as conn:
-            c = conn.cursor()
-            if edit_id:
-                # 編集の場合はUPDATEだけ
-                c.execute("""
-                    UPDATE trades
-                    SET type=?, stock=?, price=?, quantity=?, total=?, date=?, feeling=?, memo=?, parent_id=?, code=?, purpose=?
-                    WHERE id=?
-                """, (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose, edit_id))
-                conn.commit()
-                return redirect("/history")
-            else:
-                # 新規登録時のみウォッチ削除判定を実行
-                show_modal = False
-                watch_id = None
-                c.execute("SELECT id FROM trades WHERE type = 'watch' AND code = ?", (code,))
+        # ===============================
+        # 新規登録＆ウォッチ削除判定
+        # ===============================
+        show_modal = False
+        watch_id = None
+        user_id = session.get('user_id')
+        with get_db_conn() as conn:
+            with conn.cursor() as c:
+                # 「自分の」ウォッチ銘柄だけ取得
+                c.execute("SELECT id FROM trades WHERE type = 'watch' AND code = %s AND user_id = %s", (code, user_id))
                 watch = c.fetchone()
                 if watch:
                     watch_id = watch[0]
+                # INSERT時もuser_idを追加
                 c.execute("""
-                    INSERT INTO trades (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose))
+                    INSERT INTO trades (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (type, stock, price, quantity, total, date, feeling, memo, parent_id, code, purpose, user_id))
                 conn.commit()
-                c.execute("SELECT COUNT(*) FROM trades WHERE code = ? AND type != 'watch'", (code,))
-                trade_count = c.fetchone()[0]
                 if watch_id and type != 'watch':
                     show_modal = True
-                return redirect(f"/history?watch_to_delete={watch_id}") if show_modal else redirect("/history")
+
+        flash("新規登録しました。")
+        return redirect(f"/history?watch_to_delete={watch_id}") if show_modal else redirect("/history")
+
+
+    # GET時：編集データ取得
+    if edit_id and request.method == 'GET':
+        user_id = session.get('user_id')
+        with get_db_conn() as conn:
+            with conn.cursor() as c:
+                c.execute("SELECT * FROM trades WHERE id=%s AND user_id=%s", (edit_id, user_id))
+                trade = c.fetchone()
+        is_parent_edit = trade[9] is None or trade[9] == ""
+    else:
+        is_parent_edit = True
+
     today = datetime.today().strftime('%Y-%m-%d')
     return render_template('form.html', today=today, trade=trade, current="form")
 
 
 
-
-
 @app.route('/delete/<int:id>')
 def delete(id):
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        # まず指定idのparent_idを取得
-        c.execute('SELECT parent_id FROM trades WHERE id=?', (id,))
-        result = c.fetchone()
-        if result is not None:
-            parent_id = result[0]
-            if parent_id is None:
-                # 親カード（parent_idがNULL）なら親＋子を全部消す
-                c.execute('DELETE FROM trades WHERE id=? OR parent_id=?', (id, id))
-            else:
-                # 子カードなら自分だけ消す
-                c.execute('DELETE FROM trades WHERE id=?', (id,))
-            conn.commit()
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+    user_id = session.get('user_id')
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            # まず指定idのparent_idを取得（自分のデータだけ！）
+            c.execute('SELECT parent_id FROM trades WHERE id=%s AND user_id=%s', (id, user_id))
+            result = c.fetchone()
+            if result is not None:
+                parent_id = result[0]
+                if parent_id is None:
+                    # 親カード（parent_idがNULL）なら親＋子を全部消す（自分の分だけ）
+                    c.execute('DELETE FROM trades WHERE (id=%s OR parent_id=%s) AND user_id=%s', (id, id, user_id))
+                else:
+                    # 子カードなら自分だけ消す
+                    c.execute('DELETE FROM trades WHERE id=%s AND user_id=%s', (id, user_id))
+                conn.commit()
     return redirect('/history')
+
 
 
 @app.route("/history")
 def history():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+    user_id = session.get('user_id')
     id = request.args.get("id")
     q = request.args.get("q", "").strip()
     watch_to_delete = request.args.get("watch_to_delete")  # ← 追加
-    with sqlite3.connect(DATABASE) as conn:
-        c = conn.cursor()
-        if id:
-            # 1. 親idを特定
-            c.execute("SELECT parent_id FROM trades WHERE id=?", (id,))
-            parent_id_row = c.fetchone()
-            if parent_id_row and parent_id_row[0]:
-                # 子カードなら親idを使う
-                root_id = parent_id_row[0]
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            if id:
+                # 1. 親idを特定（自分の分だけ！）
+                c.execute("SELECT parent_id FROM trades WHERE id=%s AND user_id=%s", (id, user_id))
+                parent_id_row = c.fetchone()
+                if parent_id_row and parent_id_row[0]:
+                    # 子カードなら親idを使う
+                    root_id = parent_id_row[0]
+                else:
+                    # 親カードなら自分のid
+                    root_id = id
+                # 2. 親＋子カードのみ取得（自分の分だけ！）
+                c.execute("SELECT * FROM trades WHERE (id=%s OR parent_id=%s) AND user_id=%s ORDER BY date, id", (root_id, root_id, user_id))
+                trades = c.fetchall()
+            elif q:
+                # 検索も「自分の分だけ」
+                q_like = f"%{q}%"
+                c.execute("SELECT * FROM trades WHERE code LIKE %s AND user_id=%s ORDER BY date, id", (q_like, user_id))
+                trades = c.fetchall()
             else:
-                # 親カードなら自分のid
-                root_id = id
-            # 2. 親＋子カードのみ取得
-            c.execute("SELECT * FROM trades WHERE id=? OR parent_id=? ORDER BY date, id", (root_id, root_id))
-            trades = c.fetchall()
-        elif q:
-            # 検索
-            q_like = f"%{q}%"
-            c.execute("SELECT * FROM trades WHERE code LIKE ? ORDER BY date, id", (q_like,))
-            trades = c.fetchall()
-        else:
-            c.execute("SELECT * FROM trades ORDER BY date DESC, id DESC")
-            trades = c.fetchall()
+                c.execute("SELECT * FROM trades WHERE user_id=%s ORDER BY date DESC, id DESC", (user_id,))
+                trades = c.fetchall()
     trade_tree = build_trade_tree(trades)
-    return render_template("history.html", trade_tree=trade_tree, current="history", watch_to_delete=watch_to_delete)  # ← 追加
 
+
+
+        # ページネーション処理を追加
+    page = int(request.args.get("page", 1))
+    per_page = 10
+    total = len(trade_tree)
+    total_pages = ceil(total / per_page)
+    start = (page - 1) * per_page
+    end = start + per_page
+    trade_tree_page = trade_tree[start:end]
+
+    return render_template(
+        "history.html",
+        trade_tree=trade_tree_page,
+        current="history",
+        page=page,
+        total_pages=total_pages,
+        watch_to_delete=watch_to_delete,
+    )
 
 
 
@@ -668,11 +789,14 @@ def history():
 
 @app.route("/debug")
 def debug():
-    conn = sqlite3.connect("cocotoshi.db")
-    c = conn.cursor()
-    c.execute("SELECT id, type, stock, code, parent_id FROM trades ORDER BY date DESC")
-    rows = c.fetchall()
-    conn.close()
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+    user_id = session.get('user_id')
+    with get_db_conn() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT id, type, stock, code, parent_id FROM trades WHERE user_id=%s ORDER BY date DESC", (user_id,))
+            rows = c.fetchall()
 
     html = "<h2>トレード一覧（デバッグ表示）</h2><table border='1'><tr><th>ID</th><th>タイプ</th><th>銘柄</th><th>コード</th><th>親ID</th></tr>"
     for row in rows:
@@ -680,6 +804,8 @@ def debug():
     html += "</table>"
 
     return html
+
+
 
 
 
@@ -834,18 +960,105 @@ def calc_moving_average_profit(trades):
 
 def calc_heatmap(trades):
     import numpy as np
-    N = 5  # 感情種類数（感情ラベルが1〜5の場合）
+    N = 5  # 感情種類数
     profit_mat = np.zeros((N, N))
     count_mat = np.zeros((N, N))
     for entry, exit_, profit in trades:
-        if entry and exit_:
-            i = int(entry) - 1
-            j = int(exit_) - 1
+        if entry is not None and exit_ is not None:
+            i = int(entry)
+            j = int(exit_)
             profit_mat[i][j] += profit
             count_mat[i][j] += 1
     avg_profit = np.where(count_mat > 0, profit_mat / count_mat, 0)
-    return avg_profit.astype(int).tolist()
+    return avg_profit.astype(int).tolist(), count_mat.astype(int).tolist()
 
+
+
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+
+        if not email or not password:
+            flash("全て入力してください")
+            return render_template("register.html")
+
+        # パスワードをハッシュ化
+        hashed_pw = generate_password_hash(password)
+
+        # DBに登録（例：psycopg2）
+        try:
+            conn = psycopg2.connect(
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT"),
+                database=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD")
+            )
+            cur = conn.cursor()
+            # email重複チェック
+            cur.execute("SELECT id FROM users WHERE email = %s;", (email,))
+            if cur.fetchone():
+                flash("このメールアドレスは既に登録されています")
+                cur.close()
+                conn.close()
+                return render_template("register.html")
+
+            # 新規登録
+            cur.execute(
+                "INSERT INTO users (email, password_hash) VALUES (%s, %s);",
+                (email, hashed_pw)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            flash("登録完了！ログインしてください")
+            return redirect(url_for('login'))
+        except Exception as e:
+            flash(f"エラー：{e}")
+            return render_template("register.html")
+
+    return render_template("register.html")
+
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+
+        # DBからユーザー情報を取得
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, password_hash FROM users WHERE email = %s;", (email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if user and check_password_hash(user[1], password):
+            # ログイン成功
+            session['user_id'] = user[0]
+            flash("ログイン成功！")
+            return redirect(url_for('index'))  # indexやhistoryページなど適切なトップへ
+        else:
+            flash("メールアドレスまたはパスワードが違います")
+            return render_template('login.html')
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    if not session.get('user_id'):
+        flash("ログインしてください")
+        return redirect(url_for('login'))
+    session.pop('user_id', None)  # セッションからuser_idを削除
+    flash("ログアウトしました")
+    return redirect(url_for('login'))  # ログイン画面にリダイレクト
 
 
 
@@ -853,3 +1066,10 @@ def calc_heatmap(trades):
 if __name__ == '__main__':
     init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+
+
+
+
+
+

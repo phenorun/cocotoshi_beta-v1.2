@@ -3,6 +3,7 @@
 
 <script>
   document.addEventListener('DOMContentLoaded', function() {
+    showTab('heatmap'); // 必ず初期状態でheatmapを表示＆他タブ非表示
     document.body.classList.add('matrix-overflow-fix');
     let mc = document.querySelector('.main-content');
     if(mc) mc.classList.add('matrix-overflow-fix');
@@ -25,43 +26,102 @@
     <button class="tab-btn" onclick="showTab('data')">生データ</button>
   </div>
 
+<div style="margin-bottom:12px;">
+  <button type="button" id="openPeriodModal" style="padding:5px 18px; border-radius:6px; background:rgb(7, 109, 112); color:#fff; font-weight:bold; font-size:1em;">
+    集計期間変更
+  </button>
+  <span style="margin-left:1em; color:#666; font-size:0.96em;">
+    {{ start_date }} ～ {{ end_date }}
+  </span>
+</div>
+
+
+
    <!-- 感情ヒートマップ -->
+<!-- 切り替えボタン -->
+<!-- 1. ヒートマップだけに「合計/平均」切替ボタンを表示 -->
+<!-- 合計に切り替えボタン（常にHTMLに1つだけ置く） -->
+<div id="toggle-mode-btn-wrapper" style="display:flex; justify-content:flex-end; align-items:center; width:100%;">
+  <button id="toggle-mode-btn"
+    style="margin: 2px 2px 2px auto; padding: 2px 14px; font-size: 0.95em; border-radius: 12px; border: 1px solid #aaa;">
+    合計に切り替え
+  </button>
+</div>
+
+
+<!-- 勝率グラフタブ -->
+<div id="tab-purpose" class="tab-content" style="display:none">
+  <h3 style="margin-top:0;">目的 × 保有期間 × 勝率</h3>
+    <div class="purpose-graph-wrapper" style="height:600px;max-width:900px;margin:auto;">
+      <canvas id="purposeChart" width="900" height="600" style="width:100%;"></canvas>
+    </div>
+  </div>
+</div>
+
+
 
 <div id="tab-heatmap" class="tab-content active">
-  <div class="matrix-wrapper" style="overflow-x:auto;width:100vw;-webkit-overflow-scrolling:touch;">
-    <table class="matrix-table">
-      <thead>
-        <tr>
-          <th>Exit→  ↓Entry</th>
-          {% for label in exit_feelings %}
-            <th>
-              <span class="feeling-label feeling-{{ loop.index0 }}">{{ label }}</span>
-            </th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for i in range(heatmap|length) %}
-          <tr>
-            <th>
-              <span class="feeling-label feeling-{{ i }}">{{ entry_feelings[i] }}</span>
-            </th>
-            {% for j in range(heatmap[i]|length) %}
-              <td class="
-                heat 
-                {% if heatmap[i][j] > 0 %}positive
-                {% elif heatmap[i][j] < 0 %}negative
-                {% else %}neutral{% endif %}
-              ">
-                {{ heatmap[i][j] }}
-              </td>
-            {% endfor %}
-          </tr>
-        {% endfor %}
-      </tbody>
+
+  <div class="matrix-wrapper">
+    <table class="matrix-table" style="table-layout:fixed; width:100vw;">
+      <colgroup>
+        <col style="width:36px;">  <!-- 1列目幅をさらに狭く -->
+        <col span="5">
+      </colgroup>
+<thead>
+  <tr>
+    <th>Exit↓<br>Entry</th>
+    {% for i in range(exit_feelings|length) %}
+      <th>
+        <span class="feeling-label feeling-{{ i }}">{{ exit_feelings[i][0] }}</span>
+      </th>
+    {% endfor %}
+  </tr>
+</thead>
+<tbody>
+  {% set cur_heatmap = heatmap_sum if mode == 'sum' else heatmap_avg %}
+  {% for i in range(entry_feelings|length) %}
+    <tr>
+      <th>
+        <span class="feeling-label feeling-{{ i }}">{{ entry_feelings[i][0] }}</span>
+      </th>
+      {% for j in range(exit_feelings|length) %}
+        <td class="heat
+          {% if cur_heatmap[i][j] > 0 %}positive
+          {% elif cur_heatmap[i][j] < 0 %}negative
+          {% else %}neutral{% endif %}
+        ">
+          <span>{{ (cur_heatmap[i][j]/1000)|round|int }}k</span><br>
+          {% if heatmap_counts[i][j] > 0 %}
+            <span class="badge">{{ heatmap_counts[i][j] }}件</span>
+          {% endif %}
+        </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+</tbody>
+
+
+
+
+
+
+
     </table>
   </div>
 </div>
+
+
+  <!-- ↓ヒートマップだけにボタンを入れる -->
+  <div style="width:100%; display:flex; justify-content:flex-start; margin: 18px 0 0 0;">
+    <button class="ai-analysis-btn" disabled style="background:#c00; color:#fff; font-weight:bold; border-radius:16px; padding:8px 24px; opacity:0.85;">
+      AI分析（将来実装予定）
+    </button>
+  </div>
+
+  </div>
+</div>
+
 
 
 
@@ -69,11 +129,32 @@
 <!-- 期間勝率グラフ -->
 <!-- Chart.jsのCDNは<head>内 or ここで一度だけ読み込みでOK（複数回不要）-->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
+
+<!-- 勝率グラフタブ -->
 <div id="tab-purpose" class="tab-content" style="display:none">
   <h3 style="margin-top:0;">目的 × 保有期間 × 勝率</h3>
-  <canvas id="purposeChart" style="max-width:720px; width:100%;"></canvas>
+  <div class="purpose-graph-wrapper" style="height:600px;max-width:900px;margin:auto;">
+    <canvas id="purposeChart" width="900" height="600" style="width:100%;"></canvas>
+  </div>
+  <div style="width:100%; display:flex; justify-content:flex-start; margin: 18px 0 0 0;">
+    <button class="ai-analysis-btn" disabled style="background:#c00; color:#fff; font-weight:bold; border-radius:16px; padding:8px 24px; opacity:0.85;">
+      AI分析（将来実装予定）
+    </button>
+  </div>
 </div>
+
+
+
 <script>
+const purposeIcons = [
+  "{{ url_for('static', filename='icons/short.svg') }}",
+  "{{ url_for('static', filename='icons/middle.svg') }}",
+  "{{ url_for('static', filename='icons/long.svg') }}",
+  "{{ url_for('static', filename='icons/benefits.svg') }}",
+  "{{ url_for('static', filename='icons/dividend.svg') }}"
+];
 const purposeGraphData = {{ purpose_graph_data | tojson | safe }};
 document.addEventListener('DOMContentLoaded', function() {
   if (!purposeGraphData || !purposeGraphData.length) return;
@@ -82,6 +163,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const avgDays = purposeGraphData.map(x => x.avg_days);
   const winRates = purposeGraphData.map(x => x.win_rate);
 
+  // Chart.js
   new Chart(ctx, {
     type: 'bar',
     data: {
@@ -93,7 +175,7 @@ document.addEventListener('DOMContentLoaded', function() {
           data: avgDays,
           backgroundColor: '#0af',
           yAxisID: 'y-days',
-          order: 1,
+          order: 2,
         },
         {
           type: 'line',
@@ -105,21 +187,33 @@ document.addEventListener('DOMContentLoaded', function() {
           tension: 0.25,
           pointRadius: 4,
           fill: false,
-          order: 2,
+          order: 1,
         }
       ]
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       plugins: {
         legend: {
           display: true,
           position: 'top',
         },
-        tooltip: { enabled: true }
+        tooltip: { enabled: true },
+        purposeIcons: true // ← 追加
       },
       scales: {
-        x: { title: { display: true, text: '投資目的' } },
+        x: {
+          title: { display: true, text: '投資目的' },
+          ticks: {
+            callback: function(value, index, ticks) {
+              // ラベルのまま
+              return this.getLabelForValue(value);
+            },
+            color: "#333", // ラベル色
+            font: { size: 16 }
+          }
+        },
         'y-days': {
           position: 'left',
           title: { display: true, text: '平均保有期間（日）' },
@@ -133,10 +227,31 @@ document.addEventListener('DOMContentLoaded', function() {
           grid: { drawOnChartArea: false },
         }
       }
-    }
+    },
+    plugins: [{
+      id: 'purposeIcons',
+      afterDraw(chart) {
+        if (!chart.options.plugins.purposeIcons) return;
+        const ctx = chart.ctx;
+        const xAxis = chart.scales.x;
+        if (!xAxis) return;
+        const y = xAxis.bottom + 10; // ラベル下に10px余白でアイコン
+        chart.data.labels.forEach((label, i) => {
+          const x = xAxis.getPixelForTick(i);
+          const img = new window.Image();
+          img.src = purposeIcons[i];
+          img.onload = function() {
+            ctx.drawImage(img, x - 12, y, 24, 24); // 横24pxに調整
+          };
+          // キャッシュ済みなら即時描画
+          if (img.complete) ctx.drawImage(img, x - 12, y, 24, 24);
+        });
+      }
+    }]
   });
 });
 </script>
+
 
 
 
@@ -157,24 +272,23 @@ document.addEventListener('DOMContentLoaded', function() {
 <div id="tab-data" class="tab-content" style="display:none">
   
 
-<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 1em;">
-  <form method="get" style="display:inline;">
-    <input type="hidden" name="sort" value="date_desc">
-    <button type="submit" {% if sort == "date_desc" %}disabled{% endif %}>日付の新しい順</button>
-  </form>
-  <form method="get" style="display:inline;">
-    <input type="hidden" name="sort" value="date_asc">
-    <button type="submit" {% if sort == "date_asc" %}disabled{% endif %}>日付の古い順</button>
-  </form>
-  <form method="get" style="display:inline;">
-    <input type="hidden" name="sort" value="profit_desc">
-    <button type="submit" {% if sort == "profit_desc" %}disabled{% endif %}>利益が大きい順</button>
-  </form>
-  <form method="get" style="display:inline;">
-    <input type="hidden" name="sort" value="profit_asc">
-    <button type="submit" {% if sort == "profit_asc" %}disabled{% endif %}>損失が大きい順</button>
+<div class="sort-bar" style="margin-bottom: 1em;">
+  <form method="get" style="display: flex; align-items: center; gap: 8px;">
+    <label for="matrix-sort" style="font-weight: bold; margin-right: 4px;">
+      並び替え
+    </label>
+    <select id="matrix-sort" name="sort" onchange="this.form.submit()" style="padding: 6px 10px; border-radius: 6px;">
+      <option value="date_desc" {% if sort == "date_desc" %}selected{% endif %}>日付の新しい順</option>
+      <option value="date_asc" {% if sort == "date_asc" %}selected{% endif %}>日付の古い順</option>
+      <option value="profit_desc" {% if sort == "profit_desc" %}selected{% endif %}>利益が大きい順</option>
+      <option value="profit_asc" {% if sort == "profit_asc" %}selected{% endif %}>損失が大きい順</option>
+    </select>
+    {% if request.args.get('q') %}
+      <input type="hidden" name="q" value="{{ request.args.get('q') }}">
+    {% endif %}
   </form>
 </div>
+
 
 
   <!-- 検索フォーム（そのまま） -->
@@ -186,6 +300,8 @@ document.addEventListener('DOMContentLoaded', function() {
     </form>
   </div>
 
+
+  
   <div class="trade-list">
 
 
@@ -197,36 +313,39 @@ document.addEventListener('DOMContentLoaded', function() {
     <span class="trade-profit {% if row[0]|int > 0 %}profit{% else %}loss{% endif %}">{{ "{:+,}".format(row[0]|int) }}円</span>
   </div>
 <div class="trade-info-row">
-{% set entry_index = row[1] if row[1] >= 0 and row[1] < entry_feelings|length else 0 %}
-{% set exit_index = row[2] if row[2] >= 0 and row[2] < exit_feelings|length else 0 %}
-<span class="feeling-icon entry">{{ entry_feelings[entry_index] }}</span>
-<span class="arrow">⇒</span>
-<span class="feeling-icon exit">{{ exit_feelings[exit_index] }}</span>
-
-
-<span class="purpose-label" style="display: inline-flex; align-items: center; gap: 4px;">
+  {% set entry_index = row[1] if row[1] >= 0 and row[1] < entry_feelings|length else 0 %}
+  {% set exit_index = row[2] if row[2] >= 0 and row[2] < exit_feelings|length else 0 %}
+  
+  <!-- 感情バッジ -->
+  <span class="feel-badge badge-{{ entry_index }}">
+    {{ entry_feelings[entry_index] }}
+  </span>
+  <span style="font-size:1.2em; color:#888;">→</span>
+  <span class="feel-badge badge-{{ exit_index }}">
+    {{ exit_feelings[exit_index] }}
+  </span>
+  
+  <!-- 目的バッジ -->
   {% set pid = row[9]|int %}
-  {% if pid == 1 %}
-    <span class="purpose-icon">💹</span>短期
-  {% elif pid == 2 %}
-    <span class="purpose-icon">📊</span>中期
-  {% elif pid == 3 %}
-    <span class="purpose-icon">📈</span>長期
-  {% elif pid == 4 %}
-    <span class="purpose-icon">🎁</span>優待
-  {% elif pid == 5 %}
-    <span class="purpose-icon">💰</span>配当
+  {% set label_map = ['短期','中期','長期','優待','配当'] %}
+  {% if 0 <= pid < 5 %}
+    <span class="purpose-badge">
+      <img src="{{ url_for('static', filename='icons/' ~ ['short.svg','middle.svg','long.svg','benefits.svg','dividend.svg'][pid]) }}"
+           class="purpose-icon" width="16" height="16" style="vertical-align:middle;margin-right:2px;">
+      {{ label_map[pid] }}
+    </span>
   {% else %}
-    ―
+    <span class="purpose-badge">―</span>
   {% endif %}
-</span>
 
-  <span class="memo-toggle" onclick="toggleMemo(this, event)">メモ▼</span>
+  <span class="memo-toggle" onclick="toggleMemo(this, event)">▼メモ</span>
   <a href="/history?id={{ row[6] }}" class="history-link">詳細</a>
 </div>
 
+
   <div class="trade-memo" style="display:none;">
     <span class="memo-entry"><b>エントリー</b>: {{ row[4] }}</span>
+    <br>
     <span class="memo-exit"><b>決済</b>: {{ row[5] }}</span>
   </div>
 </div>
@@ -254,12 +373,38 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 
 
+<!-- ★ここに貼る：モーダル本体 -->
+<div id="periodModal" style="display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.24); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:#fff; padding:2em 1.2em 1.2em 1.2em; border-radius:14px; max-width:350px; margin:auto; position:relative; box-shadow:0 8px 28px #aaa;">
+    <div style="font-weight:bold; font-size:1.15em; margin-bottom:1.2em;">集計期間を指定</div>
+    <form method="get" style="display:flex;flex-direction:column; gap:0.7em; align-items:center;">
+      <div>
+        <input type="date" name="start" value="{{ start_date }}" style="font-size:1em;">
+        ～
+        <input type="date" name="end" value="{{ end_date }}" style="font-size:1em;">
+      </div>
+      <div style="margin-top:0.6em;">
+        <button type="submit" style="padding:3px 18px;">再集計</button>
+        <button type="button" id="modalAllPeriod" style="padding:3px 10px; margin-left:10px;">全期間</button>
+      </div>
+    </form>
+    <button type="button" id="closePeriodModal" style="position:absolute;top:8px;right:12px; background:none; border:none; font-size:1.6em; color:#888;">×</button>
+  </div>
+</div>
+
+</div> <!-- ←この「</div>」が .matrix-page の終わり -->
 
 
 
 
 
 </div>
+
+
+
+
+
+
 
 
 
@@ -273,8 +418,117 @@ document.addEventListener('DOMContentLoaded', function() {
 .tab-btn.active { background:#0af; color:#fff; }
 .tab-content { background:#fff; border-radius:10px; min-height:0; box-shadow:0 1px 8px #eee; padding:1.1em;}
 
+/* --- タブボタン --- */
+.matrix-tabs {
+  display: flex;
+  gap: 0.5em;
+  margin-bottom: 0.5em;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.tab-btn {
+  font-size: 0.95em;
+  padding: 0.35em 0.8em;
+  border-radius: 6px;
+  min-width: 70px;
+  min-height: 32px;
+  margin: 0 0.1em;
+}
+@media (max-width: 600px) {
+  .matrix-tabs {
+    gap: 0.2em;
+    margin-bottom: 0.2em;
+    padding: 0;
+  }
+  .tab-btn {
+    font-size: 0.87em;
+    padding: 0.1em 0.5em;
+    min-width: 56px;
+    min-height: 28px;
+  }
+}
+
+/* --- 集計期間フォーム（1行化＆ギュッと） --- */
+.matrix-period-form {
+  margin-bottom: 8px !important;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  flex-grow: 1;
+  font-size: 0.97em;
+}
+.matrix-period-form label {
+  font-size: 0.99em;
+  white-space: nowrap;
+  margin-right: 2px;
+  letter-spacing: -1px;
+  min-width: 58px;
+  padding: 0;
+}
+.matrix-period-form input[type="date"] {
+  font-size: 0.93em;
+  height: 30px;
+  max-width: 40vw;
+  min-width: 75px;
+  padding: 1px 2px;
+}
+.matrix-period-form button {
+  font-size: 0.93em;
+  padding: 2px 8px;
+  margin: 0 2px;
+  min-width: 58px;
+  min-height: 28px;
+  line-height: 1.1;
+}
+@media (max-width: 600px) {
+  .matrix-period-form label,
+  .matrix-period-form input[type="date"],
+  .matrix-period-form button {
+    font-size: 0.85em;
+    height: 26px;
+    min-height: 24px;
+    padding: 1px 3px;
+  }
+}
+
+/* --- 並び替えバーのラベルを1行化 --- */
+.sort-bar label {
+  font-size: 0.98em;
+  white-space: nowrap;
+  min-width: 52px;
+  padding: 0 2px 0 0;
+  letter-spacing: -1px;
+}
+@media (max-width: 600px) {
+  .sort-bar label {
+    font-size: 0.86em;
+    min-width: 41px;
+    padding: 0 1px 0 0;
+  }
+  .sort-bar select {
+    font-size: 0.86em;
+    height: 26px;
+    min-height: 24px;
+    padding: 1px 3px;
+    width: 52vw;
+    max-width: 60vw;
+  }
+}
+
+
+
+
 </style>
+
+
+
+
 <script>
+
+
+
 function showTab(tab) {
   ['heatmap','purpose','data'].forEach(id => {
     const el = document.getElementById('tab-' + id);
@@ -347,19 +601,80 @@ function toggleMemo(el, event) {
   const memo = el.closest('.trade-card').querySelector('.trade-memo');
   if (memo.style.display === 'none' || !memo.style.display) {
     memo.style.display = 'block';
-    el.textContent = 'メモ収納▲';
+    el.textContent = 'メモ▲';
   } else {
     memo.style.display = 'none';
-    el.textContent = 'メモ展開▼';
+    el.textContent = 'メモ▼';
   }
 }
 
 
 
 
+document.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('openPeriodModal').onclick = function() {
+    document.getElementById('periodModal').style.display = 'flex';
+  };
+  document.getElementById('closePeriodModal').onclick = function() {
+    document.getElementById('periodModal').style.display = 'none';
+  };
+  document.getElementById('modalAllPeriod').onclick = function() {
+    window.location.href = '{{ url_for("matrix") }}';
+  };
+  document.getElementById('periodModal').onclick = function(e) {
+    if(e.target === this) this.style.display = 'none';
+  };
+});
+
+
 
 </script>
 
+<script>
+  // ページロード時
+  document.addEventListener('DOMContentLoaded', function () {
+    const btn = document.getElementById('toggle-mode-btn');
+    // 現在のモード取得（URLパラメータでmode=avg or sum想定）
+    let mode = new URLSearchParams(window.location.search).get('mode') || 'avg';
+
+    function setBtnText() {
+      btn.textContent = (mode === 'avg') ? '合計に切り替え' : '平均に切り替え';
+    }
+    setBtnText();
+
+    btn.addEventListener('click', function () {
+      // モードをトグル
+      mode = (mode === 'avg') ? 'sum' : 'avg';
+      // URL書き換えてリロード
+      const params = new URLSearchParams(window.location.search);
+      params.set('mode', mode);
+      window.location.search = params.toString();
+    });
+  });
+
+
+function showTab(tab) {
+  ['heatmap','purpose','data'].forEach(id => {
+    const el = document.getElementById('tab-' + id);
+    if (el) {
+      el.style.display = (id === tab) ? 'block' : 'none';
+    }
+    const btn = document.querySelector('.tab-btn[onclick*="'+id+'"]');
+    if (btn) btn.classList.toggle('active', id === tab);
+  });
+  // 合計切替ボタンの表示制御
+  const toggleBtnWrap = document.getElementById('toggle-mode-btn-wrapper');
+  if (toggleBtnWrap) toggleBtnWrap.style.display = (tab === 'heatmap') ? 'flex' : 'none';
+}
+
+
+
+
+
+
+
+
+</script>
 
 
 
